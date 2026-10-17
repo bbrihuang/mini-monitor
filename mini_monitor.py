@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 
 import psutil
 from PySide6.QtCore import QPoint, QRectF, Qt, QTimer
@@ -143,6 +144,8 @@ ACCENTS = {
     "RAM": QColor("#ff8a3d"),
     "NET": QColor("#3d9eff"),
 }
+ICONS = {"CPU": "\uE950", "GPU": "\uE7F8", "RAM": "\uE964", "NET": "\uE968"}
+ICON_FONT = "Segoe MDL2 Assets"
 FONT = "Segoe UI"
 
 RING = 76        # gauge diameter (px)
@@ -152,10 +155,9 @@ GAP = 18         # space between gauges
 RADIUS = 18      # panel corner radius
 LABEL_H = 38     # room for label + subtext under each ring
 REFRESH_MS = 1000
-NET_REFRESH_MS = 15000  # network scan every 15 s
 HOT_LOAD = 90    # % load that turns a ring red
 HOT_TEMP = 80    # °C that turns a ring red
-MAX_NET_HOSTS = 30  # 100 % on the NET ring = this many hosts
+MAX_NET_SPEED = 1000  # Mbps — 100% on the NET ring (1 Gbps)
 
 NUM_GAUGES = 4   # CPU, GPU, RAM, NET
 
@@ -163,20 +165,67 @@ CONFIG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "mini_monitor.
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 APP_NAME = "MiniMonitor"
 
+# ---------- network speed tracking ----------
+_prev_net_io = None
+_prev_net_time = None
+_net_down_mbps = 0.0
+_net_up_mbps = 0.0
+
+
+def _update_net_speed():
+    """Sample psutil.net_io_counters() and compute Mbps since last call."""
+    global _prev_net_io, _prev_net_time, _net_down_mbps, _net_up_mbps
+    counters = psutil.net_io_counters()
+    now = time.time()
+    if _prev_net_io is not None and _prev_net_time is not None:
+        dt = now - _prev_net_time
+        if dt > 0:
+            _net_down_mbps = (counters.bytes_recv - _prev_net_io.bytes_recv) * 8 / dt / 1_000_000
+            _net_up_mbps = (counters.bytes_sent - _prev_net_io.bytes_sent) * 8 / dt / 1_000_000
+    _prev_net_io = counters
+    _prev_net_time = now
+
+
+def _fmt_speed_compact(mbps):
+    """Format speed for the ring center (e.g. 0 Mbps, 12 Mbps, 1.2 Gbps)."""
+    if mbps < 0.05:
+        return "0 Mbps"
+    elif mbps < 1.0:
+        return f"{mbps:.1f} Mbps"
+    elif mbps < 1000.0:
+        return f"{mbps:.0f} Mbps"
+    else:
+        return f"{mbps / 1000.0:.1f} Gbps"
+
+
+def _fmt_rate(mbps):
+    """Format speed for subtext (e.g. 0K, 450K, 12M, 1.2G)."""
+    if mbps < 0.05:
+        return "0K"
+    elif mbps < 1.0:
+        return f"{mbps * 1000:.0f}K"
+    elif mbps < 100.0:
+        return f"{mbps:.1f}M"
+    elif mbps < 1000.0:
+        return f"{mbps:.0f}M"
+    else:
+        return f"{mbps / 1000.0:.1f}G"
+
 
 # ---------- stats ----------
-def read_stats(net_hosts=0):
-    """Returns a list of (label, percent, subtext, is_hot)."""
+def read_stats():
+    """Returns a list of (label, percent, center_val_str, subtext, is_hot)."""
     global _cpu_temp_cache
 
+    _update_net_speed()
+
     cpu = psutil.cpu_percent(interval=None)
-    cores = psutil.cpu_count(logical=False) or "?"
 
     # CPU temperature (cached so a slow WMI call doesn't block painting)
     temp = _read_cpu_temp()
     if temp is not None:
         _cpu_temp_cache = temp
-    cpu_sub = f"{_cpu_temp_cache}°C · {cores}C" if _cpu_temp_cache is not None else f"{cores} cores"
+    cpu_sub = f"{_cpu_temp_cache}°C · {cpu:.0f}%" if _cpu_temp_cache is not None else f"--°C · {cpu:.0f}%"
     cpu_hot = cpu >= HOT_LOAD or (_cpu_temp_cache is not None and _cpu_temp_cache >= HOT_TEMP)
 
     if GPU is not None:
@@ -184,22 +233,30 @@ def read_stats(net_hosts=0):
             util = float(pynvml.nvmlDeviceGetUtilizationRates(GPU).gpu)
             gpu_temp = pynvml.nvmlDeviceGetTemperature(GPU, pynvml.NVML_TEMPERATURE_GPU)
             vram = pynvml.nvmlDeviceGetMemoryInfo(GPU).used / 2**30
-            gpu = (util, f"{gpu_temp}°C · {vram:.1f} GB", util >= HOT_LOAD or gpu_temp >= HOT_TEMP)
+            gpu = (util, f"{util:.0f}%", f"{gpu_temp}°C · {vram:.1f} GB", util >= HOT_LOAD or gpu_temp >= HOT_TEMP)
         except pynvml.NVMLError:
-            gpu = (0.0, "unavailable", False)
+            gpu = (0.0, "0%", "unavailable", False)
     else:
-        gpu = (0.0, "no NVIDIA GPU", False)
+        gpu = (0.0, "0%", "no NVIDIA GPU", False)
 
     vm = psutil.virtual_memory()
 
-    net_pct = min(100.0, (net_hosts / MAX_NET_HOSTS) * 100) if MAX_NET_HOSTS > 0 else 0
-    net_sub = f"{net_hosts} device{'s' if net_hosts != 1 else ''}"
+    total_mbps = _net_down_mbps + _net_up_mbps
+    if total_mbps <= 0.05:
+        net_pct = 0.0
+    elif total_mbps <= 100.0:
+        net_pct = min(80.0, max(5.0, (total_mbps / 100.0) * 80.0))
+    else:
+        net_pct = min(100.0, 80.0 + ((total_mbps - 100.0) / 900.0) * 20.0)
+
+    net_val = _fmt_speed_compact(total_mbps)
+    net_sub = f"↓{_fmt_rate(_net_down_mbps)}  ↑{_fmt_rate(_net_up_mbps)}"
 
     return [
-        ("CPU", cpu, cpu_sub, cpu_hot),
+        ("CPU", cpu, f"{cpu:.0f}%", cpu_sub, cpu_hot),
         ("GPU", *gpu),
-        ("RAM", vm.percent, f"{vm.used / 2**30:.1f} / {vm.total / 2**30:.0f} GB", vm.percent >= HOT_LOAD),
-        ("NET", net_pct, net_sub, False),
+        ("RAM", vm.percent, f"{vm.percent:.0f}%", f"{vm.used / 2**30:.1f} / {vm.total / 2**30:.0f} GB", vm.percent >= HOT_LOAD),
+        ("NET", net_pct, net_val, net_sub, False),
     ]
 
 
@@ -362,7 +419,6 @@ class MiniMonitor(QWidget):
         self.cfg = self.load_cfg()
         self.on_top = self.cfg.get("on_top", True)
         self.drag = None
-        self.net_hosts = 0
         self.scanner_dialog = None
 
         self.setWindowFlags(self.window_flags())
@@ -376,22 +432,10 @@ class MiniMonitor(QWidget):
         if "x" in self.cfg and QApplication.screenAt(QPoint(self.cfg["x"] + 20, self.cfg["y"] + 20)):
             self.move(self.cfg["x"], self.cfg["y"])
 
-        self.stats = read_stats(self.net_hosts)
+        self.stats = read_stats()
         self.timer = QTimer(self)
         self.timer.timeout.connect(self.refresh)
         self.timer.start(REFRESH_MS)
-
-        # slower timer for network host count
-        self.net_timer = QTimer(self)
-        self.net_timer.timeout.connect(self._refresh_net)
-        self.net_timer.start(NET_REFRESH_MS)
-        threading.Thread(target=self._bg_net_scan, daemon=True).start()
-
-    def _bg_net_scan(self):
-        self.net_hosts = _get_active_host_count()
-
-    def _refresh_net(self):
-        threading.Thread(target=self._bg_net_scan, daemon=True).start()
 
     def window_flags(self):
         flags = Qt.FramelessWindowHint | Qt.Tool
@@ -400,7 +444,7 @@ class MiniMonitor(QWidget):
         return flags
 
     def refresh(self):
-        self.stats = read_stats(self.net_hosts)
+        self.stats = read_stats()
         self.update()
 
     # ----- drawing -----
@@ -412,11 +456,13 @@ class MiniMonitor(QWidget):
         p.setBrush(BG)
         p.drawRoundedRect(QRectF(self.rect()), RADIUS, RADIUS)
 
-        value_font = QFont(FONT, 13, QFont.DemiBold)
+        icon_font = QFont(ICON_FONT, 12)
+        val_font_normal = QFont(FONT, 11, QFont.DemiBold)
+        val_font_small = QFont(FONT, 9, QFont.Bold)
         label_font = QFont(FONT, 9, QFont.Bold)
         sub_font = QFont(FONT, 8)
 
-        for i, (label, pct, sub, hot) in enumerate(self.stats):
+        for i, (label, pct, val_str, sub, hot) in enumerate(self.stats):
             x = PAD + i * (RING + GAP)
             ring = QRectF(x + THICK / 2, PAD + THICK / 2, RING - THICK, RING - THICK)
 
@@ -426,22 +472,28 @@ class MiniMonitor(QWidget):
             p.setBrush(Qt.NoBrush)
             p.drawEllipse(ring)
 
+            accent = HOT if hot else ACCENTS[label]
             if pct > 0:
-                pen.setColor(HOT if hot else ACCENTS[label])
+                pen.setColor(accent)
                 p.setPen(pen)
                 p.drawArc(ring, 90 * 16, int(-pct / 100 * 360 * 16))
 
-            p.setPen(TEXT)
-            p.setFont(value_font)
-            if label == "NET":
-                p.drawText(QRectF(x, PAD, RING, RING), Qt.AlignCenter, str(self.net_hosts))
-            else:
-                p.drawText(QRectF(x, PAD, RING, RING), Qt.AlignCenter, f"{pct:.0f}%")
+            # Icon in center (upper portion)
+            p.setFont(icon_font)
+            p.setPen(accent)
+            p.drawText(QRectF(x, PAD + 13, RING, 20), Qt.AlignCenter, ICONS.get(label, ""))
 
+            # Value in center (lower portion)
+            p.setFont(val_font_small if len(val_str) > 5 else val_font_normal)
+            p.setPen(TEXT)
+            p.drawText(QRectF(x, PAD + 33, RING, 22), Qt.AlignCenter, val_str)
+
+            # Label below ring
             col = QRectF(x - GAP / 2, PAD + RING + 4, RING + GAP, 16)
             p.setFont(label_font)
             p.drawText(col, Qt.AlignHCenter, label)
 
+            # Subtext below label
             p.setPen(SUB)
             p.setFont(sub_font)
             p.drawText(col.translated(0, 16), Qt.AlignHCenter, sub)
