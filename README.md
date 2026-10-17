@@ -28,10 +28,10 @@ A sleek, compact, always-on-top system stats widget for Windows — inspired by 
 
 ## 📦 Installation
 
-### Option 1: pip install (recommended)
+### Option 1: pip install from GitHub (recommended)
 
 ```bash
-pip install mini-monitor
+pip install git+https://github.com/bbrihuang/mini-monitor.git
 ```
 
 Then run:
