@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mini-monitor"
+version = "1.0.0"
+description = "A compact, always-on-top system stats widget for Windows"
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+keywords = ["system-monitor", "widget", "desktop", "gpu", "cpu", "network"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Win32 (MS Windows)",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: System :: Monitoring",
+    "Topic :: Desktop Environment",
+]
+dependencies = [
+    "PySide6>=6.5",
+    "psutil>=5.9",
+    "nvidia-ml-py>=12.0",
+]
+
+[project.optional-dependencies]
+temperature = ["wmi>=1.5"]
+
+[project.urls]
+Homepage = "https://github.com/YOUR_USERNAME/mini-monitor"
+Issues = "https://github.com/YOUR_USERNAME/mini-monitor/issues"
+
+[project.scripts]
+mini-monitor = "mini_monitor:main"
+
+[project.gui-scripts]
+mini-monitor-gui = "mini_monitor:main"
+
+[tool.setuptools]
+py-modules = ["mini_monitor"]

@@ -1,0 +1,4 @@
+PySide6>=6.5
+psutil>=5.9
+nvidia-ml-py>=12.0
+wmi>=1.5; sys_platform == "win32"
