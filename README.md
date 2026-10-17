@@ -43,7 +43,7 @@ mini-monitor
 ### Option 2: Clone & run directly
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/mini-monitor.git
+git clone https://github.com/bbrihuang/mini-monitor.git
 cd mini-monitor
 pip install -r requirements.txt
 pythonw mini_monitor.py

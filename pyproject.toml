@@ -34,8 +34,8 @@ dependencies = [
 temperature = ["wmi>=1.5"]
 
 [project.urls]
-Homepage = "https://github.com/YOUR_USERNAME/mini-monitor"
-Issues = "https://github.com/YOUR_USERNAME/mini-monitor/issues"
+Homepage = "https://github.com/bbrihuang/mini-monitor"
+Issues = "https://github.com/bbrihuang/mini-monitor/issues"
 
 [project.scripts]
 mini-monitor = "mini_monitor:main"
